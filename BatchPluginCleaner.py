@@ -4,9 +4,11 @@
 # Modified for Fallout 4
 # For mo 2.5.2+. Use at your own risk.
 
+import os
 import operator
 import re
 import typing
+import datetime
 
 import mobase  # type: ignore
 from PyQt6.QtCore import QAbstractItemModel, QModelIndex, Qt, pyqtSignal
@@ -432,6 +434,16 @@ class CleanerPlugin(mobase.IPluginTool):
 				"If the ini path should be explicitly provided.  May need to be enabled if you get errors from xEdit.",
 				False,
 			),
+			mobase.PluginSetting(
+				"save_dirty_plugins",
+				"Sends logs and backups of dirty plugins to BatchPluginCleanerOutput folder under MO2 base path.",
+				True,
+			),
+			mobase.PluginSetting(
+				"auto_close",
+				"Auto close plugin selection window after clean.",
+				True,
+			),
 			mobase.PluginSetting("exe_name_xedit", "Invoke xEdit as xEdit, not a game-specific name such as FO4Edit.", False),
 		]
 
@@ -480,12 +492,17 @@ class CleanerPlugin(mobase.IPluginTool):
 
 	def runClean(self, pluginNamesSet: set[str]) -> None:
 		failed: list[str] = []
+		logFile = False
+		if self.__organizer.pluginSetting(self.name(), "save_dirty_plugins"):
+			os.makedirs(f'{self.__organizer.basePath()}/BatchPluginCleanerOutput', exist_ok=True) # create the output folder if it doesn't exist
+   
 		xEditExecutableName = (
 			"xEdit"
 			if self.__organizer.pluginSetting(self.name(), "exe_name_xedit")
 			else gameInfo[self.__organizer.managedGame().gameShortName()]["xEditName"]
 		)
 		cleanCount = 0
+		totalCount = 0
 		pluginNames = list(pluginNamesSet)
 		# Sort the plugins so they are cleaned by priority
 		pluginNames.sort(key=lambda pluginName: 0 - self.__organizer.pluginList().priority(pluginName))
@@ -503,6 +520,13 @@ class CleanerPlugin(mobase.IPluginTool):
 				args.append(
 					f'-I:"{self.__organizer.managedGame().documentsDirectory().path()}/{self.__organizer.managedGame().iniFiles()[0]}"'
 				)
+			
+			if self.__organizer.pluginSetting(self.name(), "save_dirty_plugins"):
+				logFile = f'{self.__organizer.basePath()}/BatchPluginCleanerOutput/{plugin}_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+				args.extend((
+					f'-B:"{self.__organizer.basePath()}/BatchPluginCleanerOutput/"',
+					f'-R:"{logFile}"',
+				))
 
 			args.extend((
 				gameInfo[self.__organizer.managedGame().gameShortName()]["xEditSwitch"],
@@ -524,13 +548,28 @@ class CleanerPlugin(mobase.IPluginTool):
 			elif exitCode != 0:
 				failed.append(plugin)
 			else:
-				cleanCount += 1
+				totalCount += 1
+				if logFile:
+					if search_log_file(logFile, "    dirty:"):
+						cleanCount += 1
+					else:
+						os.remove(logFile) # remove the log file if the plugin was already clean
 
 		if failed:
 			QMessageBox.critical(self.__parentWidget, "Failed to clean some plugins!", "\n".join(failed))
 		elif cleanCount > 0:
-			QMessageBox.information(self.__parentWidget, "Clean successful", f"Successfully cleaned {cleanCount} plugins")
+			QMessageBox.information(self.__parentWidget, "Clean successful", f"Successfully cleaned {cleanCount} of {totalCount} plugins")
+   
+		if self.__organizer.pluginSetting(self.name(), "auto_close"):
+			self.__dialog.close()
 
 
 def createPlugin() -> mobase.IPluginTool:
 	return CleanerPlugin()
+
+def search_log_file(log_file_path: str, search_string: str) -> bool:
+    with open(log_file_path, 'r') as file:
+        for line in file:
+            if line.startswith(search_string):
+                return True
+    return False
